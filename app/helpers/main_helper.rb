@@ -1,14 +1,18 @@
 require 'active_support/all'
-require 'app/logics/circulatie'
+Dir.glob("#{ConfigFile[:services][:logic][:logics]}/**/*.rb").each do |logic|
+  puts "Load logic from #{logic}"
+  require "#{logic}"
+end
+
 
 module Sinatra
   module MainHelper
 
     def all_logic_modules
-      Fonar::Logic.constants.select{|c| Fonar::Logic.const_get(c).is_a?(Module)}
+      Logic.constants.select{|c| Logic.const_get(c).is_a?(Module)}
     end
 
-    def all_logic(m = Fonar::Logic)
+    def all_logic(m = Logic)
       m.public_instance_methods.map{|m| m.to_s}
     end
 
@@ -16,9 +20,9 @@ module Sinatra
       #TODO: get parameters class.method(:uitleenbaar).parameters
       @logic_urls ||= begin
                         l = []
-                        l += all_logic.map{|m| "#{ConfigFile[:base_path]}/#{m}"}
+                        l += all_logic.map{|m| "#{ConfigFile[:services][:logic][:base_path]}/#{m}"}
                         all_logic_modules.each do |c|
-                          l += all_logic(Fonar::Logic.const_get(c)).map{|m| "#{ConfigFile[:base_path]}/#{c.downcase}/#{m}"}
+                          l += all_logic(Logic.const_get(c)).map{|m| "#{ConfigFile[:services][:logic][:base_path]}/#{c.downcase}/#{m}"}
                         end
                         l
                         end
@@ -33,15 +37,15 @@ module Sinatra
 
       if call_stack.size == 1
         if call_stack_params && call_stack_params.size > 0
-          Class.new.extend( Fonar::Logic).send(call_stack[0].to_sym, call_stack_params)
+          Class.new.extend( Logic).send(call_stack[0].to_sym, call_stack_params)
         else
-          Class.new.extend( Fonar::Logic).send(call_stack[0].to_sym)
+          Class.new.extend( Logic).send(call_stack[0].to_sym)
         end
       else
         if call_stack_params && call_stack_params.size > 0
-          Class.new.extend( Fonar::Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym, call_stack_params)
+          Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym, call_stack_params)
         else
-          Class.new.extend( Fonar::Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym)
+          Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym)
         end
       end
     rescue ArgumentError => e
@@ -49,7 +53,7 @@ module Sinatra
     rescue StandardError => e
       LOGGER.error(e.class)
       LOGGER.error(e.message)
-      raise RuntimeError, "A runtime error occured see logs"
+      raise RuntimeError, "A runtime error occured see logs: #{e.message}"
     end
 
   end

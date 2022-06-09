@@ -61,6 +61,10 @@ class ConfigFile
   end
 
   def self.discover_config_file_path
+    if ENV.include?('CONFIG_FILE_PATH')
+      @config_file_path = ENV['CONFIG_FILE_PATH']
+    end
+
     if @config_file_path.nil? || @config_file_path.empty?
       if File.exist?(@config_file_name)
         @config_file_path = '.'
