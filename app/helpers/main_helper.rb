@@ -1,5 +1,8 @@
 require 'active_support/all'
-Dir.glob("#{ConfigFile[:services][:logic][:logics]}/**/*.rb").each do |logic|
+require 'moneta'
+require 'solis'
+
+Dir.glob("#{::ConfigFile[:services][:logic][:logics]}/**/*.rb").each do |logic|
   puts "Load logic from #{logic}"
   require "#{logic}"
 end
@@ -20,9 +23,9 @@ module Sinatra
       #TODO: get parameters class.method(:uitleenbaar).parameters
       @logic_urls ||= begin
                         l = []
-                        l += all_logic.map{|m| "#{ConfigFile[:services][:logic][:base_path]}/#{m}"}
+                        l += all_logic.map{|m| "#{::ConfigFile[:services][:logic][:base_path]}/#{m}"}
                         all_logic_modules.each do |c|
-                          l += all_logic(Logic.const_get(c)).map{|m| "#{ConfigFile[:services][:logic][:base_path]}/#{c.downcase}/#{m}"}
+                          l += all_logic(Logic.const_get(c)).map{|m| "#{::ConfigFile[:services][:logic][:base_path]}/#{c.downcase}/#{m}"}
                         end
                         l
                         end
