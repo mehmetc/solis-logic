@@ -7,4 +7,4 @@ gem 'sinatra-contrib'
 gem 'http'
 gem 'moneta'
 
-gem 'solis', path: '../../ego/solis'
+gem 'solis', path: '../../../ego/solis'
