@@ -12,8 +12,7 @@ class MainController < Sinatra::Base
     set :logging, true
     set :static, true
     set :public_folder, "#{root}/public"
-    set :solis, Solis::Graph.new(Solis::Shape::Reader::File.read(Solis::ConfigFile[:shape]),
-                                 Solis::ConfigFile[:solis])
+    set :solis, Solis::Graph.new(Solis::Shape::Reader::File.read(solis_conf[:shape]), solis_conf)
   end
 
   get '/' do

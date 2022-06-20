@@ -7,6 +7,10 @@ Dir.glob("#{Solis::ConfigFile[:services][:logic][:logics]}/**/*.rb").each do |lo
   require "#{logic}"
 end
 
+def solis_conf
+  raise 'Please set SERVICE_ROLE environment parameter' unless ENV.include?('SERVICE_ROLE')
+  Solis::ConfigFile[:services][ENV['SERVICE_ROLE'].to_sym][:solis]
+end
 
 module Sinatra
   module MainHelper
