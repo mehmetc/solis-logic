@@ -31,8 +31,8 @@ module Logic
 
       if result.nil? || result.empty? || (from_cache.eql?('0'))
         f = File.read(filename)
-
-        ids = ids.split(',').map { |m| "<#{Solis::Options.get[:graph_name]}#{entity.tableize}/#{m}>" }
+        ids = ids.gsub(/[^a-zA-Z0-9\-\,]/,'')
+        ids = ids.split(',').map { |m| "<#{Solis::Options.instance.get[:graph_name]}#{entity.tableize}/#{m}>" }
         ids = [ids] unless ids.is_a?(Array)
         ids = ids.join(" ")
 
