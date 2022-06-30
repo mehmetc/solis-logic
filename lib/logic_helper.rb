@@ -36,7 +36,7 @@ module Logic
         ids = [ids] unless ids.is_a?(Array)
         ids = ids.join(" ")
 
-        q = f.gsub('{{VALUES}}', "VALUES ?#{id_name} { #{ids} }")
+        q = f.gsub(/{ ?{ ?VALUES ?} ?}/, "VALUES ?#{id_name} { #{ids} }")
 
         result = Solis::Query.run(entity, q)
         cache.store(key, result, expires: 86400)
