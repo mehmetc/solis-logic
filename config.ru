@@ -2,11 +2,16 @@ $LOAD_PATH << '.'
 require 'logger'
 require 'solis'
 require 'sinatra/base'
-require 'app/controllers/main_controller'
 
 LOGGER=Logger.new(STDOUT)
 
-map "#{Solis::ConfigFile[:services][:logic][:base_path]}" do
-  LOGGER.info("Mounting 'MainController' on #{Solis::ConfigFile[:services][:logic][:base_path]}")
+raise 'Please set SERVICE_ROLE environment parameter' unless ENV.include?('SERVICE_ROLE')
+$SERVICE_ROLE=ENV['SERVICE_ROLE'].downcase.to_sym
+puts "setting SERVICE_ROLE=#{$SERVICE_ROLE}"
+
+require 'app/controllers/main_controller'
+
+map "#{Solis::ConfigFile[:services][$SERVICE_ROLE][:base_path]}" do
+  LOGGER.info("Mounting 'MainController' on #{Solis::ConfigFile[:services][$SERVICE_ROLE][:base_path]}")
   run MainController
 end

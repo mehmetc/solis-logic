@@ -2,7 +2,7 @@ require 'active_support/all'
 require 'moneta'
 require 'solis'
 
-Dir.glob("#{Solis::ConfigFile[:services][:logic][:logics]}/**/*.rb").each do |logic|
+Dir.glob("#{Solis::ConfigFile[:services][$SERVICE_ROLE][:logics]}/**/*.rb").each do |logic|
   puts "Load logic from #{logic}"
   require "#{logic}"
 end
@@ -11,6 +11,8 @@ def solis_conf
   raise 'Please set SERVICE_ROLE environment parameter' unless ENV.include?('SERVICE_ROLE')
   Solis::ConfigFile[:services][ENV['SERVICE_ROLE'].to_sym][:solis]
 end
+
+$SOLIS = Solis::Graph.new(Solis::Shape::Reader::File.read(solis_conf[:shape]), solis_conf)
 
 module Sinatra
   module MainHelper
