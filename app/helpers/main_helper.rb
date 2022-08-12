@@ -17,6 +17,19 @@ $SOLIS = Solis::Graph.new(Solis::Shape::Reader::File.read(solis_conf[:shape]), s
 module Sinatra
   module MainHelper
 
+    def api_error(status, source, title="Unknown error", detail="", e = nil)
+      content_type :json
+
+      puts e.backtrace.join("\n") unless e.nil?
+
+      message = {"errors": [{
+                              "status": status,
+                              "source": {"pointer":  source},
+                              "title": title,
+                              "detail": detail
+                            }]}.to_json
+    end
+
     def all_logic_modules
       Logic.constants.select{|c| Logic.const_get(c).is_a?(Module)}
     end
