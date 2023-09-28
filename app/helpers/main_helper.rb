@@ -70,6 +70,8 @@ module Sinatra
           Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym)
         end
       end
+    rescue Solis::Error::NotFoundError => e
+      halt 404, e.message
     rescue ArgumentError => e
       e.message
     rescue StandardError => e
