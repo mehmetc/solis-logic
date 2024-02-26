@@ -28,7 +28,9 @@ class MainController < Sinatra::Base
 
   get '/*' do
     content_type :json
-    call_logic
+    Graphiti::with_context(load_context) do
+      call_logic
+    end
   end
 
   not_found do

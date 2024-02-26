@@ -35,8 +35,8 @@ module Logic
         ids = ids.split(',').map { |m| "<#{Solis::Options.instance.get[:graph_name]}#{entity.tableize}/#{m}>" }
         ids = [ids] unless ids.is_a?(Array)
         ids = ids.join(" ")
-
-        q = f.gsub(/{ ?{ ?VALUES ?} ?}/, "VALUES ?#{id_name} { #{ids} }")
+        language = Graphiti.context[:object].language
+        q = f.gsub(/{ ?{ ?VALUES ?} ?}/, "VALUES ?#{id_name} { #{ids} }").gsub(/{ ?{ ?LANGUAGE ?} ?}/, "bind(\"#{language}\" as ?filter_language).")
 
         result = Solis::Query.run(entity, q)
         cache.store(key, result, expires: 86400)
@@ -50,6 +50,5 @@ module Logic
     def cache
       @cache ||= Moneta.new(:File, dir: Solis::ConfigFile[:cache], expires: 86400)
     end
-
   end
 end

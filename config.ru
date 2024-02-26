@@ -1,4 +1,5 @@
 $LOAD_PATH << '.'
+require 'active_support/all'
 require 'logger'
 require 'solis'
 require 'sinatra/base'

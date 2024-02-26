@@ -80,6 +80,13 @@ module Sinatra
       raise RuntimeError, "A runtime error occured see logs: #{e.message}"
     end
 
+
+    def load_context
+      language = params[:language] || solis_conf[:language] || 'nl'
+      from_cache = params['from_cache'] || '1'
+      OpenStruct.new(from_cache: from_cache, language: language)
+    end
+
   end
   helpers MainHelper
 end
