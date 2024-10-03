@@ -30,9 +30,11 @@ module Logic
       result = cache[key] if cache.key?(key)
 
       if result.nil? || result.empty? || (from_cache.eql?('0'))
+        target_classes = target_class_for($SOLIS.shape_as_model(entity))
         f = File.read(filename)
-        ids = ids.gsub(/[^a-zA-Z0-9\-\,]/,'')
-        ids = ids.split(',').map { |m| "<#{Solis::Options.instance.get[:graph_name]}#{entity.tableize}/#{m}>" }
+         ids = ids.gsub(/[^a-zA-Z0-9\-\,]/,'')
+        ids = ids.split(',').map { |m| target_classes.map {|target_class| "<#{target_class}/#{m}>" }}
+        #ids = ids.split(',').map { |m| "<#{Solis::Options.instance.get[:graph_name]}#{entity.tableize}/#{m}>" }
         ids = [ids] unless ids.is_a?(Array)
         ids = ids.join(" ")
         language = Graphiti.context[:object].language
@@ -49,6 +51,13 @@ module Logic
 
     def cache
       @cache ||= Moneta.new(:File, dir: Solis::ConfigFile[:cache], expires: 86400)
+    end
+
+    private
+    def target_class_for(model)
+      descendants = ObjectSpace.each_object(Class).select { |klass| klass < model }.reject { |m| m.metadata.nil? }.map { |m| "#{Solis::Options.instance.get[:graph_name]}#{m.name.tableize}" }
+      descendants << "#{Solis::Options.instance.get[:graph_name]}#{model.name.tableize}"
+      descendants
     end
   end
 end
