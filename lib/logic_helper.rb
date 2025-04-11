@@ -22,7 +22,7 @@ module Logic
       raise e
     end
 
-    def resolve(filename, id_name, entity, ids, from_cache = '1', depth = 1)
+    def resolve(filename, id_name, entity, ids, from_cache = '1', offset = 0, limit = 10, depth = 1)
       raise 'Please supply one or more uuid\'s' if ids.nil? || ids.empty?
 
       result = {}
@@ -51,6 +51,8 @@ module Logic
              .gsub(/{ ?{ ?LANGUAGE ?} ?}/, "bind(\"#{language}\" as ?filter_language).")
              .sub(/{ ?{ ?ENTITY ?} ?}/, entity)
              .sub(/{ ?{ ?GRAPH ?} ?}/, graph_name)
+             .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
+             .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
 
         result = Solis::Query.run(entity, q)
         cache.store(key, result, expires: 86400)
@@ -78,79 +80,67 @@ module Logic
       prefix = Solis::Options.instance.get[:graph_prefix]
       graph = Solis::Options.instance.get[:graph_name]
 
-      query = <<~SPARQL
-    #{prefixes.map { |prefix, uri| "PREFIX #{prefix}: <#{uri}>" }.join("\n")}
-    CONSTRUCT {
-      ?entity_id  a #{prefix}:#{entity_name} ;
-               ?property ?value0 .
-  SPARQL
+      # Build PREFIX declarations
+      prefix_block = prefixes.map { |key, uri| "PREFIX #{key}: <#{uri}>" }.join("\n")
+      prefix_block += "\nPREFIX #{prefix}: <#{graph}>" unless prefixes.keys.include?(prefix.to_s)
 
-      depth.times do |i|
-        query += "      ?value#{i} ?property#{i} ?value#{i+1} .\n"
+      # Start building CONSTRUCT and WHERE clauses
+      construct_patterns = []
+      where_unions = []
+
+      # Build patterns for each depth level
+      (0..depth).each do |level|
+        # Variables for this level
+        vars = (0..level).map { |i| "?value#{i}" }
+        prop_vars = (0..level-1).map { |i| "?property#{i}" }
+
+        # CONSTRUCT pattern for this level
+        if level == 0
+          construct_patterns << "?entity_id a #{prefix}:#{entity_name} ;\n           ?property ?value0 ."
+        else
+          prev_var = level == 1 ? "?value0" : "?value#{level-1}"
+          construct_patterns << "#{prev_var} ?property#{level-1} ?value#{level} ."
+        end
+
+        # WHERE pattern for this level (as a UNION block)
+        where_clause = []
+        where_clause << "VALUES ?entity_id {#{entity_id}}"
+        where_clause << "BIND(\"#{language}\" as ?filter_language) ."
+        where_clause << "?entity_id a #{prefix}:#{entity_name} ;\n         ?property ?value0 ."
+        where_clause << "FILTER(STRSTARTS(STR(?property), \"#{graph}\")) ."
+
+        # Add language filter for level 0
+        where_clause << "FILTER(\n      isIRI(?value0) ||\n      (isLiteral(?value0) && (\n        LANG(?value0) = ?filter_language || LANG(?value0) = \"\"\n      ))\n    )"
+
+        # Add patterns for intermediate levels
+        (1..level).each do |i|
+          prev_var = "?value#{i-1}"
+          curr_var = "?value#{i}"
+          prop_var = "?property#{i-1}"
+
+          where_clause << "FILTER(isIRI(#{prev_var})) ."
+          where_clause << "#{prev_var} #{prop_var} #{curr_var} ."
+          where_clause << "FILTER(STRSTARTS(STR(#{prop_var}), \"#{graph}\")) ."
+
+          # Add language filter for this level
+          where_clause << "FILTER(\n      isIRI(#{curr_var}) ||\n      (isLiteral(#{curr_var}) && (\n        LANG(#{curr_var}) = ?filter_language || LANG(#{curr_var}) = \"\"\n      ))\n    )"
+        end
+
+        # Add this level's WHERE clause to the UNION blocks
+        where_unions << where_clause.join("\n    ")
       end
 
-      query += <<~SPARQL
+      # Combine everything into the final query
+      query = <<~SPARQL
+    #{prefix_block}
+    
+    CONSTRUCT {
+      #{construct_patterns.join("\n  ")}
     }
     WHERE {
-      VALUES ?entity_id {#{entity_id}}
-      BIND("#{language}" as ?filter_language) .
-      ?entity_id a #{prefix}:#{entity_name} ;
-              ?property ?value0 .
-      FILTER(STRSTARTS(STR(?property), "#{graph}")) .         
-#      FILTER(DATATYPE(?value0) != rdf:langString || langMatches( lang(?value0), \"#{language}\" )).   
+      #{where_unions.map { |union| "{\n    #{union}\n  }" }.join("\n  UNION\n  ")}
+    }
   SPARQL
-
-      depth.times do |i|
-        query += <<~SPARQL
-      OPTIONAL {
-        ?value#{i} ?property#{i} ?value#{i+1} .
-        FILTER(isIRI(?value#{i})) .
-        FILTER(STRSTARTS(STR(?property#{i}), "#{graph}")) .            
-#        FILTER(DATATYPE(?value#{i+1}) != rdf:langString || langMatches( lang(?value#{i+1}), \"#{language}\" )).   
-      }
-    SPARQL
-      end
-      # FILTER (!BOUND(?value#{i}) || DATATYPE(?value#{i}) != rdf:langString || LANG(?value#{i}) = ?filter_language) .
-
-      query += "}"
-      query
-    end
-    def make_construct2(entity_id, entity_name, prefixes = {}, depth = 1)
-      language = Graphiti.context[:object].language
-      base_prefix = Solis::Options.instance.get[:graph_prefix]
-
-      query = <<~SPARQL
-        #{prefixes.map { |prefix, uri| "PREFIX #{prefix}: <#{uri}>" }.join("\n")}
-        CONSTRUCT {
-          ?entity ?property ?value0 .
-      SPARQL
-
-      depth.times do |i|
-        query += "      ?value#{i} ?property#{i} ?value#{i + 1} .\n"
-      end
-
-      query += <<~SPARQL
-        }
-        WHERE {
-          VALUES ?entity { #{entity_id} }
-          BIND("#{language}" as ?filter_language).
-
-          ?entity a #{base_prefix}:#{entity_name} ;
-                  ?property ?value0 .
-      SPARQL
-
-      depth.times do |i|
-        query += <<~SPARQL
-          OPTIONAL {
-            ?value#{i} ?property#{i} ?value#{i + 1} .
-            FILTER(isIRI(?value#{i}))
-          }
-        SPARQL
-      end
-
-      query += "}"
-
-      puts query
       query
     end
   end
