@@ -29,14 +29,14 @@ module Logic
 
       key = Digest::SHA256.hexdigest("#{entity}-#{ids}")
       result = cache[key] if cache.key?(key)
-      graph_name = Solis::Options.instance.get[:graph_name]
-      graph_prefix = Solis::Options.instance.get[:graph_prefix]
+      graph_name = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
+      graph_prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
 
       if result.nil? || result.empty? || (from_cache.eql?('0'))
         target_classes = target_class_for($SOLIS.shape_as_model(entity))
         ids = ids.gsub(/[^a-zA-Z0-9\-\,]/, '')
         if filename.empty?
-          ids = ids.split(',').map { |m| "<#{Solis::Options.instance.get[:graph_name]}#{entity.tableize}/#{m}>" }
+          ids = ids.split(',').map { |m| "<#{graph_name}#{entity.tableize}/#{m}>" }
         else
           ids = ids.split(',').map { |m| target_classes.map { |target_class| "<#{target_class}/#{m}>" } }
         end
@@ -53,7 +53,7 @@ module Logic
              .sub(/{ ?{ ?GRAPH ?} ?}/, graph_name)
              .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
              .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
-
+        puts q
         result = Solis::Query.run(entity, q)
         cache.store(key, result, expires: 86400)
       end
@@ -77,8 +77,8 @@ module Logic
 
     def make_construct(entity_id, entity_name, prefixes = {}, depth = 1)
       language = Graphiti.context[:object].language || 'en'
-      prefix = Solis::Options.instance.get[:graph_prefix]
-      graph = Solis::Options.instance.get[:graph_name]
+      graph = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
+      prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
 
       # Build PREFIX declarations
       prefix_block = prefixes.map { |key, uri| "PREFIX #{key}: <#{uri}>" }.join("\n")
