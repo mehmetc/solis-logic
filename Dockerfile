@@ -15,6 +15,11 @@ RUN chown -R solis:solis /app
 
 USER solis:solis
 
+ENV RUBY_GC_HEAP_INIT_SLOTS=600000
+ENV RUBY_GC_HEAP_FREE_SLOTS=200000
+ENV RUBY_GC_HEAP_GROWTH_FACTOR=1.5
+ENV RUBY_GC_HEAP_OLDOBJECT_LIMIT_FACTOR=1.0
+
 # Metadata
 LABEL org.opencontainers.image.vendor="KULeuven/LIBIS" \
 	org.opencontainers.image.url="https://www.libis.be" \

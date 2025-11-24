@@ -53,7 +53,7 @@ module Logic
              .sub(/{ ?{ ?GRAPH ?} ?}/, graph_name)
              .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
              .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
-        puts q
+
         result = Solis::Query.run(entity, q)
         cache.store(key, result, expires: 86400)
       end
@@ -75,7 +75,7 @@ module Logic
       descendants
     end
 
-    def make_construct(entity_id, entity_name, prefixes = {}, depth = 1)
+    def make_construct_old(entity_id, entity_name, prefixes = {}, depth = 1)
       language = Graphiti.context[:object].language || 'en'
       graph = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
       prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
@@ -141,6 +141,82 @@ module Logic
       #{where_unions.map { |union| "{\n    #{union}\n  }" }.join("\n  UNION\n  ")}
     }
   SPARQL
+      query
+    end
+
+    def make_construct(entity_ids, entity_name, prefixes = {}, depth = 1)
+      # Normalize entity_ids to always be an array
+      entity_ids = entity_ids.split(' ')
+
+      language = Graphiti.context[:object].language || 'en'
+      graph = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
+      prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
+
+      # Build PREFIX declarations
+      prefix_block = prefixes.map { |key, uri| "PREFIX #{key}: <#{uri}>" }.join("\n")
+      prefix_block += "\nPREFIX #{prefix}: <#{graph}>" unless prefixes.keys.include?(prefix.to_s)
+
+      # Build VALUES clause with all entity IDs
+      values_clause = entity_ids.map { |id| "<#{id.gsub(/[<>]/,'')}>" }.join("\n    ")
+
+      # Start building CONSTRUCT and WHERE clauses
+      construct_patterns = []
+      where_unions = []
+
+      # Build patterns for each depth level
+      (0..depth).each do |level|
+        # Variables for this level
+        vars = (0..level).map { |i| "?value#{i}" }
+        prop_vars = (0..level-1).map { |i| "?property#{i}" }
+
+        # CONSTRUCT pattern for this level
+        if level == 0
+          construct_patterns << "?entity_id a #{prefix}:#{entity_name} ;\n           ?property ?value0 ."
+        else
+          prev_var = level == 1 ? "?value0" : "?value#{level-1}"
+          construct_patterns << "#{prev_var} ?property#{level-1} ?value#{level} ."
+        end
+
+        # WHERE pattern for this level (as a UNION block)
+        where_clause = []
+        where_clause << "VALUES ?entity_id {\n      #{values_clause}\n    }"
+        where_clause << "BIND(\"#{language}\" as ?filter_language) ."
+        where_clause << "?entity_id a #{prefix}:#{entity_name} ;\n         ?property ?value0 ."
+        where_clause << "FILTER(STRSTARTS(STR(?property), \"#{graph}\")) ."
+
+        # Add language filter for level 0
+        where_clause << "FILTER(\n      isIRI(?value0) ||\n      (isLiteral(?value0) && (\n        LANG(?value0) = ?filter_language || LANG(?value0) = \"\"\n      ))\n    )"
+
+        # Add patterns for intermediate levels
+        (1..level).each do |i|
+          prev_var = "?value#{i-1}"
+          curr_var = "?value#{i}"
+          prop_var = "?property#{i-1}"
+
+          where_clause << "FILTER(isIRI(#{prev_var})) ."
+          where_clause << "#{prev_var} #{prop_var} #{curr_var} ."
+          where_clause << "FILTER(STRSTARTS(STR(#{prop_var}), \"#{graph}\")) ."
+
+          # Add language filter for this level
+          where_clause << "FILTER(\n      isIRI(#{curr_var}) ||\n      (isLiteral(#{curr_var}) && (\n        LANG(#{curr_var}) = ?filter_language || LANG(#{curr_var}) = \"\"\n      ))\n    )"
+        end
+
+        # Add this level's WHERE clause to the UNION blocks
+        where_unions << where_clause.join("\n    ")
+      end
+
+      # Combine everything into the final query
+      query = <<~SPARQL
+  #{prefix_block}
+  
+  CONSTRUCT {
+    #{construct_patterns.join("\n  ")}
+  }
+  WHERE {
+    #{where_unions.map { |union| "{\n    #{union}\n  }" }.join("\n  UNION\n  ")}
+  }
+SPARQL
+
       query
     end
   end

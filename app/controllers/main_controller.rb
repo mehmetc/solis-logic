@@ -26,11 +26,19 @@ class MainController < Sinatra::Base
     }.to_json
   end
 
+  get '/debug/memory' do
+    content_type :json
+    GC.start
+    {
+      memory_mb: `ps -o rss= -p #{Process.pid}`.to_i / 1024,
+      objects: ObjectSpace.count_objects
+    }.to_json
+  end
+
   get '/*' do
     content_type :json
     Graphiti::with_context(load_context) do
       call_logic.to_json
-      #dump_by_content_type(call_logic, params[:accept])
     end
   end
 

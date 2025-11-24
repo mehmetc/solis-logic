@@ -51,6 +51,7 @@ module Sinatra
     end
 
     def call_logic
+      result = nil
       call_stack = params[:splat].first.split('/')
       call_stack_params = params.select{|k,v| !k.eql?('splat')}
       if call_stack.size > 2
@@ -59,17 +60,19 @@ module Sinatra
 
       if call_stack.size == 1
         if call_stack_params && call_stack_params.size > 0
-          Class.new.extend( Logic).send(call_stack[0].to_sym, call_stack_params)
+          result = Class.new.extend( Logic).send(call_stack[0].to_sym, call_stack_params)
         else
-          Class.new.extend( Logic).send(call_stack[0].to_sym)
+          result = Class.new.extend( Logic).send(call_stack[0].to_sym)
         end
       else
         if call_stack_params && call_stack_params.size > 0
-          Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym, call_stack_params)
+          result = Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym, call_stack_params)
         else
-          Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym)
+          result = Class.new.extend( Logic.const_get(call_stack[0].classify)).send(call_stack[1].to_sym)
         end
       end
+
+      result
     rescue Solis::Error::NotFoundError => e
       halt 404, e.message
     rescue ArgumentError => e
@@ -79,6 +82,9 @@ module Sinatra
       LOGGER.error(e.message)
       puts e.backtrace.join("\n")
       raise RuntimeError, "A runtime error occured see logs: #{e.message}"
+    ensure
+      result = nil # Explicitly clear the reference
+      GC.start(immediate_sweep: true) # Force collection if needed
     end
 
 
