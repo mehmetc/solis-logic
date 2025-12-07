@@ -33,7 +33,8 @@ module Logic
       graph_prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
 
       if result.nil? || result.empty? || (from_cache.eql?('0'))
-        target_classes = target_class_for($SOLIS.shape_as_model(entity))
+        model = $SOLIS.shape_as_model(entity)
+        target_classes = target_class_for(model)
         ids = ids.gsub(/[^a-zA-Z0-9\-\,]/, '')
         if filename.empty?
           ids = ids.split(',').map { |m| "<#{graph_name}#{entity.tableize}/#{m}>" }
@@ -54,7 +55,7 @@ module Logic
              .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
              .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
 
-        result = Solis::Query.run(entity, q)
+        result = Solis::Query.run(entity, q, {model: model})
         cache.store(key, result, expires: 86400)
       end
       result
