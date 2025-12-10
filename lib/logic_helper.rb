@@ -47,6 +47,7 @@ module Logic
 
         f = File.read(filename) unless filename.empty?
         f = make_construct(ids,entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
+        #f = make_virtuoso_construct(ids, entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
 
         q = f.gsub(/{ ?{ ?VALUES ?} ?}/, "VALUES ?#{id_name} { #{ids} }")
              .gsub(/{ ?{ ?LANGUAGE ?} ?}/, "bind(\"#{language}\" as ?filter_language).")
@@ -55,7 +56,7 @@ module Logic
              .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
              .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
 
-        result = Solis::Query.run(entity, q, {model: model})
+        result = Solis::Query.run(entity, q, {model: model, max_embed_depth: depth})
         cache.store(key, result, expires: 86400)
       end
       result
@@ -220,5 +221,107 @@ SPARQL
 
       query
     end
+
+    def make_virtuoso_construct(entity_ids, entity_name, prefixes = {}, depth = 1, limit: 10_000)
+      # --- SETUP ---
+      ids = Array(entity_ids).flat_map { |id| id.to_s.split(/\s+/) }
+      safe_values = ids.map { |id| "<#{id.gsub(/[<>]/, '')}>" }.join(" ")
+
+      language = Graphiti.context[:object].language || 'en'
+      main_graph = Solis::Options.instance.get[:graphs].find { |s| s['type'] == :main }
+      graph_name = main_graph&.fetch('name', nil)
+      graph_prefix = main_graph&.fetch('prefix', nil)
+
+      # --- PREFIXES ---
+      all_prefixes = prefixes.dup
+      all_prefixes[graph_prefix] = graph_name if graph_prefix && !all_prefixes.key?(graph_prefix)
+      all_prefixes['rdf'] = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+      all_prefixes['rdfs'] = 'http://www.w3.org/2000/01/rdf-schema#'
+
+      prefix_block = all_prefixes.map { |k, v| "PREFIX #{k}: <#{v}>" }.join("\n")
+
+      # --- SCHEMA AWARENESS ---
+      # Generate the whitelist of predicates.
+      # This acts as the "Filter", but uses the Index instead of string parsing.
+      allowed_predicates = valid_predicates_list(graph_prefix)
+
+      query = <<~SPARQL
+    #{prefix_block}
+
+    CONSTRUCT {
+      ?s ?p ?o
+    }
+    WHERE {
+      # 1. OPTIMIZATION: Transitive Subquery (The "Walker")
+      #    First, efficiently gather the IDs of all nodes we need to display.
+      {
+        SELECT DISTINCT ?s
+        WHERE {
+          VALUES ?root { #{safe_values} }
+          
+          ?root ?p_transitive ?s OPTION (
+            TRANSITIVE,
+            t_distinct,
+            t_min(0),
+            t_max(#{depth}),
+            t_no_cycles,
+            t_step('step_no') as ?step
+          ) .
+
+          # Ensure we only traverse along known schema properties 
+          # (prevents traversing out of the "graph" via random links)
+          VALUES ?p_transitive { #{allowed_predicates} }
+          
+          FILTER( isIRI(?s) )
+        }
+        LIMIT #{limit}
+      }
+
+      # 2. DATA FETCHING
+      #    Now, for every node found in the tree (?s), fetch its properties (?p) and values (?o).
+      ?s ?p ?o .
+
+      # 3. FILTERING
+      #    Only return properties that are in our schema + rdf:type
+      VALUES ?p { #{allowed_predicates} }
+
+      # 4. LANGUAGE HANDLING
+      #{language_filter('?o')}
+    }
+  SPARQL
+
+      query
+    end
+
+    private
+
+    def language_filter(var)
+      <<~FILTER.strip
+    FILTER(
+      isIRI(#{var}) || 
+      (isLiteral(#{var}) && (LANG(#{var}) = ?filter_language || LANG(#{var}) = ""))
+    )
+    BIND("#{Graphiti.context[:object].language || 'en'}" as ?filter_language)
+  FILTER
+    end
+
+    def valid_predicates_list(prefix)
+      graph_name = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
+      graph_prefix = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['prefix']
+      # Dynamically fetch schema properties from Solis
+      paths = RDF::Graph.load(Solis::Options.instance.get[:shape])&.query([nil, RDF::Vocab::SHACL.path, nil]).map(&:object).uniq rescue nil
+      return [] if paths.nil? || paths.empty?
+      # Create list of prefixed properties (e.g., odis:label, odis:date)
+      # IMPORTANT: Add 'rdf:type' explicitly here!
+      list = paths.map do |uri|
+        property = uri.value.gsub(graph_name, '')
+        "#{graph_prefix}:#{property}"
+      end
+      list << "rdf:type"
+
+      list.join(" ")
+    end
+
   end
+
 end

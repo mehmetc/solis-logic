@@ -27,11 +27,27 @@ class MainController < Sinatra::Base
   end
 
   get '/debug/memory' do
+    require 'objspace'
     content_type :json
     GC.start
+    counts = Hash.new(0)
+    ObjectSpace.each_object { |o|
+      begin
+        counts[(o.class.name rescue o.class.to_s)] += 1
+      rescue Exception => e
+        puts e.message
+      end
+    }
+
+    # Show top memory hogs
+    top = counts.sort_by { |k, v| -v }.first(20)
+
     {
       memory_mb: `ps -o rss= -p #{Process.pid}`.to_i / 1024,
-      objects: ObjectSpace.count_objects
+      objects: ObjectSpace.count_objects,
+      heap_live: GC.stat[:heap_live_slots],
+      total_allocated: GC.stat[:total_allocated_objects],
+      top: top
     }.to_json
   end
 
