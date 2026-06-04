@@ -25,12 +25,12 @@ module Logic
       raise e
     end
 
-    def resolve_graph(ids:, entity_type:, depth: 1)
+    def resolve_graph(ids:, entity_type:, depth: 1, property_depths: {})
       raise 'Please supply one or more uuid\'s' if ids.nil? || ids.empty?
 
       result = {}
 
-      key = Digest::SHA256.hexdigest("#{entity_type}-#{ids}")
+      key = Digest::SHA256.hexdigest("#{entity_type}-#{ids}-#{depth}-#{property_depths}")
       result = cache[key] if cache.key?(key)
 
       graph = Solis::Options.instance.get[:graphs].select{|s| s['type'].eql?(:main)}&.first['name']
@@ -47,8 +47,10 @@ module Logic
         result[entity_id] = fetcher.fetch(entity_id: entity_id,
                                           entity_type: "#{prefix}:#{entity_type}",
                                           per_entity_depth: 1,
-                                          max_total_depth: 2,
-                                          language: language)
+                                          max_total_depth: depth,
+                                          language: language,
+                                          max_nodes: 500,
+                                          property_depths: property_depths.transform_keys(&:to_s))
       end
       cache.store(key, result, expires: 86400)
 
@@ -58,7 +60,7 @@ module Logic
       raise e
     end
 
-    def resolve(filename, id_name, entity, ids, from_cache = '1', offset = 0, limit = 10, depth = 1)
+    def resolve(filename, id_name, entity, ids, from_cache = '1', offset = 0, limit = 10, depth = 1, params: {})
       raise 'Please supply one or more uuid\'s' if ids.nil? || ids.empty?
 
       result = {}
@@ -82,17 +84,20 @@ module Logic
         language = Graphiti.context[:object].language
 
         f = File.read(filename) unless filename.empty?
-        #f = make_construct_old(ids,entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
-        f = make_construct(ids,entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
-        #f = make_virtuoso_construct(ids, entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
+        f = make_construct(ids, entity, {"#{graph_prefix}" => graph_name, "rdf" => "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}, depth) if f.nil?
 
         q = f.gsub(/{ ?{ ?VALUES ?} ?}/, "VALUES ?#{id_name} { #{ids} }")
              .gsub(/{ ?{ ?LANGUAGE ?} ?}/, "bind(\"#{language}\" as ?filter_language).")
-             .sub(/{ ?{ ?ENTITY ?} ?}/, entity)
-             .sub(/{ ?{ ?GRAPH ?} ?}/, graph_name)
-             .sub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
-             .sub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
+             .gsub(/{ ?{ ?ENTITY ?} ?}/, entity)
+             .gsub(/{ ?{ ?GRAPH ?} ?}/, graph_name)
+             .gsub(/{ ?{ ?OFFSET ?} ?}/, offset.to_i.to_s)
+             .gsub(/{ ?{ ?LIMIT ?} ?}/, limit.to_i.to_s)
 
+        q.scan(/\{ ?\{ ?\$(\w+) ?\}?\}/).flatten.each do |var|
+          var.gsub!(/[ \.\/\\]/,'')
+          q.gsub!(/{ ?{ ?\$#{var} ?} ?}/, params[var.downcase.to_sym].to_s) if params.key?(var.downcase.to_sym)
+        end
+        puts q
         result = Solis::Query.run(entity, q, {model: model, max_embed_depth: depth})
         cache.store(key, result, expires: 86400)
       end

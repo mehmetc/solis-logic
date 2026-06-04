@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'http'
-require 'oj'
 require 'set'
 
 # Fetches an entity and its related graph from Virtuoso level by level,
@@ -64,31 +63,63 @@ class GraphFetcher
     )
   end
 
-  # Fetch an entity and its related graph with per-entity depth
+  # Fetch an entity and its related graph with level-based batching.
   #
   # @param entity_id [String] The full URI of the entity
   # @param entity_type [String] The type (prefixed or full URI), e.g. 'odis:Archief'
-  # @param per_entity_depth [Integer] How many levels to fetch for each entity (default: 2)
-  # @param max_total_depth [Integer] Maximum depth from root to stop fetching (default: 10)
+  # @param per_entity_depth [Integer] Sub-depth for root entity fetch (default: 2)
+  # @param max_total_depth [Integer] Maximum BFS distance from root (default: 10)
   # @param language [String] Language filter for literals (default: 'nl')
+  # @param max_nodes [Integer] Cap on total nodes fetched to prevent runaway (default: 500)
   # @return [Hash, nil] Nested entity with embedded relations, or nil if not found
-  def fetch(entity_id:, entity_type:, per_entity_depth: 2, max_total_depth: 10, language: 'nl')
+  def fetch(entity_id:, entity_type:, per_entity_depth: 2, max_total_depth: 10,
+            language: 'nl', max_nodes: 500, property_depths: {})
     reset_stats!
     all_nodes = {}
+    seen_iris = Set.new([entity_id])
 
-    # Queue: [entity_id, entity_type_or_nil, distance_from_root]
-    fetch_queue = [[entity_id, entity_type, 0]]
-    queued = Set.new([entity_id])
-    @stats.entities_queued = 1
+    # Level 0: root entity with type-filtered query
+    root_nodes = fetch_entity_with_depth(entity_id, entity_type, per_entity_depth, language)
+    root_nodes.each do |id, node|
+      if all_nodes.key?(id)
+        merge_node_properties(all_nodes[id], node)
+      else
+        all_nodes[id] = node
+        @stats.nodes_fetched += 1
+      end
+    end
+    seen_iris.merge(root_nodes.keys)
 
-    while (item = fetch_queue.shift)
-      current_id, current_type, distance = item
+    # {iri => arrival_property}: which property on the root linked to this IRI
+    current_frontier = extract_iris_with_properties(root_nodes.values)
+                         .reject { |iri, _| seen_iris.include?(iri) }
+    seen_iris.merge(current_frontier.keys)
+    @stats.entities_queued = 1 + current_frontier.size
 
-      # Fetch this entity with per_entity_depth levels
-      entity_nodes = fetch_entity_with_depth(current_id, current_type, per_entity_depth, language)
+    # Loop up to the highest effective depth across all property overrides
+    loop_max = [max_total_depth, *property_depths.values].max
+    (1..loop_max).each do |distance|
+      break if current_frontier.empty?
+      break if all_nodes.size >= max_nodes
 
-      # Merge into all_nodes
-      entity_nodes.each do |id, node|
+      iris_to_fetch = current_frontier.keys.first(max_nodes - all_nodes.size)
+
+      level_nodes = if per_entity_depth == 1
+                      fetch_nodes_batch(iris_to_fetch, language)
+                    else
+                      # per_entity_depth > 1: fall back to per-entity fetching
+                      iris_to_fetch.each_with_object({}) do |iri, acc|
+                        fetch_entity_with_depth(iri, nil, per_entity_depth, language).each do |id, node|
+                          if acc.key?(id)
+                            merge_node_properties(acc[id], node)
+                          else
+                            acc[id] = node
+                          end
+                        end
+                      end
+                    end
+
+      level_nodes.each do |id, node|
         if all_nodes.key?(id)
           merge_node_properties(all_nodes[id], node)
         else
@@ -97,15 +128,18 @@ class GraphFetcher
         end
       end
 
-      # Queue newly discovered entities (if within max_total_depth)
-      next if distance >= max_total_depth
-
-      new_iris = extract_all_iris_from_nodes(entity_nodes.values) - queued
-      new_iris.each do |iri|
-        fetch_queue << [iri, nil, distance + 1]
-        queued << iri
-        @stats.entities_queued += 1
+      # Build next frontier: apply per-property depth limit (A1 per-hop)
+      next_frontier = {}
+      extract_iris_with_properties(level_nodes.values).each do |iri, prop|
+        next if seen_iris.include?(iri)
+        effective_max = property_depths.fetch(prop, max_total_depth)
+        next if distance >= effective_max
+        next_frontier[iri] = prop
       end
+
+      seen_iris.merge(next_frontier.keys)
+      @stats.entities_queued += next_frontier.size
+      current_frontier = next_frontier
     end
 
     return nil if all_nodes.empty?
@@ -149,6 +183,45 @@ class GraphFetcher
     end
 
     nodes
+  end
+
+  def fetch_nodes_batch(iris, language)
+    result = fetch_level(iris.to_a, language)
+    return {} if result.nil?
+
+    nodes = {}
+    extract_graph(result).each do |node|
+      id = node['@id']
+      next unless id
+      if nodes.key?(id)
+        merge_node_properties(nodes[id], node)
+      else
+        nodes[id] = node.dup
+      end
+    end
+    nodes
+  end
+
+  # Returns {iri => short_property_name} for all outbound namespace IRIs in nodes.
+  # When an IRI is reachable via multiple properties, the first encountered wins.
+  def extract_iris_with_properties(nodes)
+    result = {}
+    nodes.each do |node|
+      node.each do |key, value|
+        next if key.start_with?('@')
+        short_key = strip_namespace(key)
+        Array(value).each do |v|
+          case v
+          when Hash
+            iri = v['@id']
+            result[iri] ||= short_key if iri&.start_with?(@namespace)
+          when String
+            result[v] ||= short_key if v.start_with?(@namespace)
+          end
+        end
+      end
+    end
+    result
   end
 
   def extract_all_iris_from_nodes(nodes)
@@ -236,13 +309,19 @@ class GraphFetcher
   end
 
   def execute_query(query)
+    puts query
     start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
+    # IMPORTANT: request N-Triples, not JSON-LD.
+    # Virtuoso's JSON-LD serializer silently truncates large CONSTRUCT
+    # results (it caps the output well below the actual triple count),
+    # which made related entities disappear and be rendered downstream as
+    # unresolved { _id, id } stubs. N-Triples is serialized in full.
     response = HTTP
                  .timeout(@timeout)
                  .post(@endpoint, form: {
                    query: query,
-                   format: 'application/ld+json'
+                   format: 'application/n-triples'
                  })
 
     elapsed_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000
@@ -257,13 +336,84 @@ class GraphFetcher
     body = response.body.to_s
     return nil if body.empty?
 
-    Oj.load(body, mode: :compat)
+    parse_ntriples(body)
   rescue HTTP::Error => e
     warn "HTTP error: #{e.message}"
     nil
-  rescue Oj::ParseError => e
-    warn "JSON parse error: #{e.message}"
-    nil
+  end
+
+  # Parse an N-Triples document into the same shape the rest of this class
+  # expects from JSON-LD: { '@graph' => [ { '@id' => ..., pred => value(s) } ] }.
+  # IRI objects become { '@id' => uri }; literals become their (unescaped)
+  # string value; repeated predicates collapse into an array.
+  def parse_ntriples(body)
+    nodes = {}
+
+    body.each_line do |line|
+      triple = parse_ntriple_line(line)
+      next unless triple
+
+      subject, predicate, object = triple
+      node = (nodes[subject] ||= { '@id' => subject })
+      add_ntriple_property(node, predicate, object)
+    end
+
+    { '@graph' => nodes.values }
+  end
+
+  # Splits a single N-Triples line into [subject, predicate, object].
+  # Subject/predicate are returned as bare IRI strings; object is either
+  # { '@id' => uri } for an IRI/blank node or a String for a literal.
+  def parse_ntriple_line(line)
+    line = line.strip
+    return nil if line.empty? || line.start_with?('#')
+
+    line = line.sub(/\s*\.\s*\z/, '')
+    m = line.match(/\A(<[^>]*>|_:\S+)\s+(<[^>]*>)\s+(.+)\z/m)
+    return nil unless m
+
+    [strip_angle(m[1]), strip_angle(m[2]), parse_ntriple_object(m[3].strip)]
+  end
+
+  def parse_ntriple_object(raw)
+    if raw.start_with?('<')
+      { '@id' => strip_angle(raw) }
+    elsif raw.start_with?('_:')
+      { '@id' => raw }
+    elsif raw.start_with?('"')
+      m = raw.match(/\A"((?:[^"\\]|\\.)*)"/m)
+      m ? unescape_ntriples(m[1]) : raw
+    else
+      raw
+    end
+  end
+
+  def strip_angle(token)
+    token.start_with?('<') ? token[1..-2] : token
+  end
+
+  def unescape_ntriples(str)
+    str.gsub(/\\(u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|.)/) do
+      esc = Regexp.last_match(1)
+      case esc[0]
+      when 'u', 'U' then [esc[1..].to_i(16)].pack('U')
+      when 't' then "\t"
+      when 'n' then "\n"
+      when 'r' then "\r"
+      when 'b' then "\b"
+      when 'f' then "\f"
+      else esc[0]
+      end
+    end
+  end
+
+  def add_ntriple_property(node, predicate, value)
+    existing = node[predicate]
+    if existing.nil?
+      node[predicate] = value
+    else
+      node[predicate] = (existing.is_a?(Array) ? existing : [existing]) + [value]
+    end
   end
 
   def prefix_declarations
