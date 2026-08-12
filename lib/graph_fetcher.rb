@@ -70,11 +70,14 @@ class GraphFetcher
   # @param per_entity_depth [Integer] Sub-depth for root entity fetch (default: 2)
   # @param max_total_depth [Integer] Maximum BFS distance from root (default: 10)
   # @param language [String] Language filter for literals (default: 'nl')
-  # @param max_nodes [Integer] Cap on total nodes fetched to prevent runaway (default: 500)
+  # @param max_nodes [Integer] Cap on ordinary breadth-first nodes fetched (default: 500)
+  # @param max_priority_nodes [Integer, nil] Larger ceiling for prioritized chains
+  #   (edges whose property has a depth override). Defaults to max_nodes * 4.
   # @return [Hash, nil] Nested entity with embedded relations, or nil if not found
   def fetch(entity_id:, entity_type:, per_entity_depth: 2, max_total_depth: 10,
-            language: 'nl', max_nodes: 500, property_depths: {})
+            language: 'nl', max_nodes: 500, max_priority_nodes: nil, property_depths: {})
     reset_stats!
+    max_priority_nodes ||= max_nodes * 4
     all_nodes = {}
     seen_iris = Set.new([entity_id])
 
@@ -96,13 +99,28 @@ class GraphFetcher
     seen_iris.merge(current_frontier.keys)
     @stats.entities_queued = 1 + current_frontier.size
 
-    # Loop up to the highest effective depth across all property overrides
+    # Loop up to the highest effective depth across all property overrides.
+    #
+    # Two budgets keep deep relationship chains from being starved by breadth:
+    #   - ordinary edges fill the global `max_nodes` budget (breadth cap);
+    #   - edges whose arrival property has an explicit depth override
+    #     (e.g. verwantschap, naam, agent, relatie) are prioritized and may use
+    #     the larger `max_priority_nodes` ceiling, so they are followed to their
+    #     configured depth even when the ordinary budget is exhausted.
     loop_max = [max_total_depth, *property_depths.values].max
     (1..loop_max).each do |distance|
       break if current_frontier.empty?
-      break if all_nodes.size >= max_nodes
 
-      iris_to_fetch = current_frontier.keys.first(max_nodes - all_nodes.size)
+      # Partition the frontier by arrival property: prioritized vs ordinary.
+      priority = current_frontier.select { |_iri, prop| property_depths.key?(prop) }
+      ordinary = current_frontier.reject { |_iri, prop| property_depths.key?(prop) }
+
+      # Prioritized chains first (Option 2), against the larger ceiling (Option 3);
+      # ordinary nodes fill whatever global budget remains.
+      priority_iris = priority.keys.first([max_priority_nodes - all_nodes.size, 0].max)
+      ordinary_iris = ordinary.keys.first([max_nodes - all_nodes.size - priority_iris.size, 0].max)
+      iris_to_fetch = priority_iris + ordinary_iris
+      break if iris_to_fetch.empty?
 
       level_nodes = if per_entity_depth == 1
                       fetch_nodes_batch(iris_to_fetch, language)
@@ -202,6 +220,14 @@ class GraphFetcher
     nodes
   end
 
+  # Wraps a property value into an array of values WITHOUT destructuring a Hash.
+  # NOTE: do not use Ruby's Kernel#Array here — Array({'@id' => x}) returns
+  # [['@id', x]] (the hash exploded into key/value pairs), which silently drops
+  # single-valued object references (e.g. agent, relatie) from traversal.
+  def wrap_values(value)
+    value.is_a?(Array) ? value : [value]
+  end
+
   # Returns {iri => short_property_name} for all outbound namespace IRIs in nodes.
   # When an IRI is reachable via multiple properties, the first encountered wins.
   def extract_iris_with_properties(nodes)
@@ -210,7 +236,7 @@ class GraphFetcher
       node.each do |key, value|
         next if key.start_with?('@')
         short_key = strip_namespace(key)
-        Array(value).each do |v|
+        wrap_values(value).each do |v|
           case v
           when Hash
             iri = v['@id']
@@ -229,7 +255,7 @@ class GraphFetcher
     nodes.each do |node|
       node.each do |key, value|
         next if key.start_with?('@')
-        Array(value).each do |v|
+        wrap_values(value).each do |v|
           case v
           when Hash
             iris << v['@id'] if v['@id']&.start_with?(@namespace)
@@ -474,7 +500,7 @@ class GraphFetcher
       node.each do |key, value|
         next if key.start_with?('@')
 
-        Array(value).each do |v|
+        wrap_values(value).each do |v|
           case v
           when Hash
             # {"@id": "..."} reference
@@ -526,7 +552,7 @@ class GraphFetcher
       if existing.nil?
         target[key] = value
       elsif existing != value
-        target[key] = (Array(existing) + Array(value)).uniq
+        target[key] = (wrap_values(existing) + wrap_values(value)).uniq
       end
     end
   end
